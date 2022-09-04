@@ -1,200 +1,152 @@
-require('dotenv').config();
-const express = require('express')
-const bodyParser = require('body-parser')
-const mongoose = require('mongoose');
-const shortId = require('shortid');
-const cors = require('cors')
-const uri = process.env.MONGO_URI || 'mongodb://localhost:27017';
-const app = express()
+const express = require("express");
+const app = express();
+const cors = require("cors");
+const mongoose = require("mongoose");
+const { Schema } = mongoose;
+require("dotenv").config();
+
+// Connect to db
+mongoose.connect(
+  process.env.DB_URI,
+  { useNewUrlParser: true, useUnifiedTopology: true },
+  console.log("connected to db")
+);
 
 app.use(cors());
-
-app.use(bodyParser.urlencoded({ extended: false }))
-app.use(bodyParser.json())
-
-mongoose.connect(uri, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000 // Timeout after 5s instead of 30s
-});
-const connection = mongoose.connection;
-connection.once('open', () => {
-  console.log("MongoDB database connection established successfully");
-})
-
-app.use(express.static('public'))
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/views/index.html')
+app.use(express.static("public"));
+app.use(express.urlencoded({ extended: true }));
+app.get("/", (req, res) => {
+  res.sendFile(__dirname + "/views/index.html");
 });
 
-const Schema = mongoose.Schema;
-const exerciseSchema = new Schema({
-  description: String,
-  duration: Number,
-  date: { type: Date, default: Date.now }
+// Create User Model
+const userSchema = new Schema({
+  username: { type: String, required: true },
+  count: Number,
+  log: [
+    {
+      _id: false,
+      description: {type: String, required: true},
+      duration: {type: Number, required: true},
+      date: String
+    }
+  ]
 });
-const schema = new Schema({
-  username: {
-    type: String,
-    required: true,
-    index: { unique: true }
-  },
-  _id: { type: String, required: true },
-  exercise: [exerciseSchema]
-});
+const User = mongoose.model("User", userSchema);
 
-const User = mongoose.model('User', schema);
-
-
-function isValidDate(date) {
-  return date instanceof Date && !isNaN(date);
-}
-
-app.post('/api/exercise/new-user', (req, res, next) => {
-  const new_user = req.body.username;
-  if (new_user) {
-    User.findOne({ username: new_user }, function(err, data) {
-      if (err) next(err);
-      if (data !== null) {
-        next({ status: 400, message: 'username already exists' });
-      } else {
-        let user = new User({ username: new_user, _id: shortId.generate() });
-        user.save(function(err, data) {
-          if (err) {
-            next(err);
-          }
-          res.json({ username: data.username, _id: data._id });
-        });
-      }
-    });
-  } else {
-    next({ status: 400, message: 'no username given' });
-  }
-});
-
-app.post('/api/exercise/add', (req, res, next) => {
-  console.log('body');
-  console.log(req.body);
-  let user_id = req.body.userId,
-    description = req.body.description,
-    duration = req.body.duration,
-    date = req.body.date ? new Date(req.body.date) : new Date();
-
-  if (req.body.userId) {
-    User.findOne({ _id: user_id }, function(err, data) {
-      if (err) {
-        next(err);
-      }
-      if (data === null || data._id !== user_id) {
-        next({ status: 400, message: 'no id' });
-      } else {
-        User.findByIdAndUpdate({ _id: data._id },
-          { $push: { exercise: { description, duration, date } } },
-          { upsert: true, new: true },
-          function(err, data) {
-            if (err) {
-              next(err);
-            }
-            if (!data) {
-              next({ status: 400, message: 'no valid id' });
-            }
-            else {
-              res.json({
-                username: data.username,
-                description,
-                duration: +duration,
-                _id: data._id,
-                date: date.toDateString()
-              })
-            }
-          });
-      }
-    });
-  } else { 
-    next({ status: 400, message: 'no ID given' }); 
-  }
-
-  if (!description) { 
-    next({ status: 400, message: 'missing description' }) 
-  }
-  if (!duration) { 
-    next({ status: 400, message: 'missing duration' }) 
-  }
-
-});
-
-app.get('/api/exercise/log', (req, res) => {
-  User.findOne({ _id: req.query.userId }, (err, data) => {
-    if (data === null) {
-      res.send({ error: "User not found" });
+// Add user to database (check if user already exists in mongodb)
+// If user already exists return: Username already taken;
+app.post("/api/users/", async (req, res) => {
+  const username = req.body.username;
+  User.find({ username: username }, { __v: 0, log: 0}, (error, result) => {
+    if (error) {
+      console.log(error);
+    }
+    if (result.length > 0) {
+      res.send("Username already taken");
     } else {
-      let exercises = data.exercise;
-      const fromDate = new Date(req.query.from);
-      const toDate = new Date(req.query.to);
-      const limit = Number(req.query.limit);
-
-      if (isValidDate(toDate)) {
-        exercises = exercises.filter(item => item.date >= fromDate && item.date <= toDate);
-      } else if (isValidDate(fromDate)) {
-        exercises = exercises.filter(item => item.date >= fromDate);
-      }
-
-      let logs = [];
-      for (let i = 0; i < exercises.length; i++) {
-        logs.push({
-          description: exercises[i].description,
-          duration: exercises[i].duration,
-          date: exercises[i].date.toDateString(),
-        });
-      }
-
-      if (!isNaN(limit) && logs.length > limit) {
-        logs = logs.slice(0, limit);
-      }
-
-      res.send({
-        _id: data._id,
-        username: data.username,
-        count: logs.length,
-        log: logs
+      const newUser = new User({
+        username: username
+      });
+      newUser.save();
+      res.json({
+       _id: newUser.id,
+        username: newUser.username
       });
     }
   });
 });
 
-app.get('/api/exercise/users', (req, res) => {
-  const logs = { exercise: false };
-  User.find({}, logs, (err, data) => {
-    if (err) {
-      res.send({ error: 'Error users' });
+// You can POST to /api/users/:_id/exercises with form data description, duration, and optionally date.
+// If no date is supplied, the current date will be used. The response returned will be the user object with the exercise fields added.
+app.post("/api/users/:_id/exercises", (req, res) => {
+  const id = req.params._id; 
+  const description = req.body.description;
+  const duration = req.body.duration;
+  let date;
+  // check date is in correct format
+  const dateFormat = /^\d{4}\-\d{2}\-\d{2}$/;
+  if(dateFormat.test(req.body.date)) {
+    date = new Date(req.body.date).toString().slice(0, 15);
+  } else if(!req.body.date){
+    date = new Date();
+    date = date.toString().slice(0,15);
+  } else {
+    res.send("Invalid Date Format");
+    return;
+  };
+  const newLog = {
+    description,
+    duration,
+    date
+  }
+  User.findOneAndUpdate({_id: id}, {$push: {log: newLog}, $inc: { count: 1}}, {new: true}, (error, result) => {
+    if(error) {
+      console.log(error)
+    } else {
+      // alter return so only returns needed fields
+      const len = result.log.length - 1;
+      console.log("result", result);
+      res.json({
+        _id: result._id,
+        username: result.username,
+        date: result.log[len].date,
+        duration: result.log[len].duration,
+        description: result.log[len].description
+      });
     }
-    res.json(data);
   })
-});
-
-app.use((req, res, next) => {
-  return next({ status: 404, message: 'not found' })
 })
 
-// Error Handling middleware
-app.use((err, req, res, next) => {
-  let errCode, errMessage
-
-  if (err.errors) {
-    // mongoose validation error
-    errCode = 400 // bad request
-    const keys = Object.keys(err.errors)
-    // report the first validation error
-    errMessage = err.errors[keys[0]].message
-  } else {
-    // generic or custom error
-    errCode = err.status || 500
-    errMessage = err.message || 'Internal Server Error'
-  }
-  res.status(errCode).type('txt')
-    .send(errMessage)
+// make a GET request to /api/users to get an array of all users. Each element in the array is an object containing a user's username and _id.
+app.get("/api/users/", (req, res) => {
+  User.find({}, {__v: 0, log:0}, (error, result) => {
+    res.json(result);
+    console.log(result);  
+  });
 })
 
 const listener = app.listen(process.env.PORT || 3000, () => {
-  console.log('Your app is listening on port ' + listener.address().port)
+  console.log("Your app is listening on port " + listener.address().port);
+});
+
+// You can make a GET request to /api/users/:_id/logs to retrieve a full exercise log of any user.
+// The returned response will be the user object with a log array of all the exercises added.
+// Each log item has the description, duration, and date properties.
+app.get("/api/users/:_id/logs?", (req, res) => {
+  const id = req.params._id;
+  User.find({_id: id}, {__v: 0}, (error, result) => {
+    let responseObject = result;
+    if(error){
+      console.log(error)
+    } else {
+      if(req.query.from || req.query.to) {
+        let fromDate = new Date(0);
+        let toDate = new Date();
+        if(req.query.from) {
+          fromDate = new Date(req.query.from);
+        }
+        if(req.query.to) {
+          toDate = new Date(req.query.to);
+        }
+        fromDate = fromDate.getTime();
+        toDate = toDate.getTime();
+        responseObject[0].log = responseObject[0].log.filter((sesh) => {
+          let seshDate = new Date(sesh.date).getTime();
+          console.log("seshDate", seshDate);
+          return seshDate >= fromDate && seshDate <= toDate;
+        })
+      }
+      if(req.query.limit) {
+        responseObject[0].log = responseObject[0].log.slice(0, req.query.limit);
+      }
+      
+      res.json({
+        _id: responseObject[0]._id,
+        username: responseObject[0].username,
+        count: responseObject[0].count,
+        log: responseObject[0].log
+      });
+    }
+  })
 })
